@@ -166,7 +166,11 @@ class AgentCoordinator(context: Context, private val settings: SettingsStore) {
             status("Waiting for you to open the $name chat")
             note("$name hides its screen from assistants like me (a bank security rule). Please $how in $name. I will continue as soon as the chat is open.")
             progress(name,"Please $how. Then I continue by myself.",you=true)
-        })
+        },
+        // Event-aware settling; never throws (a lively chat screen returns its latest reading, as before).
+        settled = { since -> runCatching { stable(since=since) }.getOrNull() ?: service().collector.capture() },
+        lastChangeAt = { pkg -> AgentAccessibilityService.instance?.lastChangeAt(pkg) },
+        now = { android.os.SystemClock.uptimeMillis() })
     /** Owner types the app's PIN; Köməkçi never reads it and continues by itself once the login screen is gone (max 2 min). */
     private suspend fun awaitOwnerLogin(app: BotApp): Boolean {
         val name=app.label.substringBefore(" ")
@@ -211,7 +215,12 @@ class AgentCoordinator(context: Context, private val settings: SettingsStore) {
     }
     private suspend fun runChannels(command: String, mode: String) {
         status("Making a plan")
-        val steps=backend.plan(command,mode)
+        // A clear single-app request (one of ABB/myGov, one question or one top-up) is planned on the phone: no 3–8 s
+        // cloud plan call. The step then runs exactly like a cloud-planned one (owner's decision, 2026-11-09).
+        val local=if(mode=="live") LocalPlan.single(command) else null
+        trace("plan",if(local!=null) "local ${local.app}/${local.channel}/${local.intent}" else "cloud")
+        val steps=local?.let { listOf(BackendClient.ChannelStep("s1",it.app,it.channel,it.goal,"",it.intent,it.firstMessage)) }
+            ?: backend.plan(command,mode)
         mutable.value=mutable.value.copy(
             channels=steps.map { ChannelStepView(appLabel(it.app),it.channel=="bot",it.goal) },
             lines=(mutable.value.lines+ChatLine("plan","Plan, ${steps.size} steps: "+steps.mapIndexed { i, s -> "${i+1}. ${appLabel(s.app)}: ${s.goal}" }.joinToString(". "))).takeLast(100))
@@ -246,7 +255,9 @@ class AgentCoordinator(context: Context, private val settings: SettingsStore) {
         val prior=results.map { it.key to it.value }
         repeat(10) {
             status("Talking to the ${app.label}")
-            val t=backend.botTurn(mode,app.key,step.goal,transcript,prior,clarifications)
+            // The plan already wrote the first message: no bot-turn call for it. It still goes through BotRisk below.
+            val t=if(transcript.isEmpty() && clarifications.isEmpty() && step.firstMessage.isNotBlank()) BackendClient.BotTurn("say",step.firstMessage,"")
+                else backend.botTurn(mode,app.key,step.goal,transcript,prior,clarifications)
             when(t.type) {
                 "say" -> {
                     when(BotRisk.decide(t.text)) {
@@ -391,9 +402,12 @@ class AgentCoordinator(context: Context, private val settings: SettingsStore) {
             }
             val target=BotLocator.clickTarget(s,BotLocator.find(s,route.path[at])!!) ?: return null
             trace("route","${route.id} ${at+1}/${route.path.size} click")
+            val tappedAt=android.os.SystemClock.uptimeMillis()
             if(!service().executor.execute(Proposal(UUID.randomUUID().toString(),s.snapshotId,"click",targetId=target.id))) return null
             step=at+1; scrolls=0
-            delay(1200); s=runCatching { stable() }.getOrNull() ?: return null
+            // Was a fixed 1.2 s: continue as soon as the next route element is on a settled screen, at most 1.2 s as
+            // before. The last step has no next element, so it keeps the full wait (its numbers load after opening).
+            s=awaitElement(tappedAt,1200) { now -> step<route.path.size && BotLocator.find(now,route.path[step])!=null } ?: return null
         }
         return s.takeIf { step>=route.path.size && it.packageName==MYGOV && !it.sensitive }
     }
@@ -843,17 +857,52 @@ class AgentCoordinator(context: Context, private val settings: SettingsStore) {
      * [deep] = read the whole tree (local-only flows; never uploaded): WhatsApp's share-picker names sit below the
      * default 28 levels (2026-11-08: "Rəhman Aghazade" was on screen, only its row container was captured).
      */
-    private suspend fun stable(deep: Boolean = false): UiSnapshot {
-        val cap={ if(deep) service().collector.capture(maxNodes=400,maxDepth=90) else service().collector.capture() }
-        var previous=cap()
-        // Up to ~2.4 s: app launches and screen transitions often animate for over a second.
-        repeat(12) {
-            delay(200)
-            val next=cap()
-            if(previous.fingerprint==next.fingerprint) return next
-            previous=next
+    /**
+     * A settled reading of the screen. Settled = (a) the open app has sent no change event for [QUIET_MS] and none
+     * arrived while reading, or (b) as before, two readings 200 ms apart are identical — whichever comes first, so this
+     * is never slower than the original two-reading check. [since] = uptime just before an action: the app gets up to
+     * [REACT_MS] (the old fixed pause) to start redrawing before a quiet screen counts, so the reading is not the
+     * screen from before the action. Up to ~2.4 s like before: launches and transitions often animate for a second.
+     */
+    private suspend fun stable(deep: Boolean = false, since: Long = 0L): UiSnapshot {
+        val svc=service()
+        val cap={ if(deep) svc.collector.capture(maxNodes=400,maxDepth=90) else svc.collector.capture() }
+        val clock={ android.os.SystemClock.uptimeMillis() }
+        val start=clock()
+        val after=if(since>0L) since+REACT_MS else 0L
+        var previous=cap(); var readAt=start
+        while(true) {
+            val now=clock()
+            val changed=svc.lastChangeAt(previous.packageName)
+            val reacted=since==0L || changed>since || now>=after
+            if(reacted && now-changed>=QUIET_MS) {
+                // A reading taken after the quiet period began (and after the app reacted) is already the settled screen.
+                if(changed<=readAt-QUIET_MS && (since==0L || readAt>=after || changed>since)) return previous
+                val s=cap()
+                if(s.packageName==previous.packageName && svc.lastChangeAt(s.packageName)==changed) return s
+                previous=s; readAt=now
+            } else if(now-readAt>=200) {
+                val next=cap()
+                if(next.fingerprint==previous.fingerprint && (since==0L || readAt>=after)) return next
+                previous=next; readAt=now
+            }
+            if(now-start>2400+(if(since>0L) REACT_MS else 0L)) error("Screen did not settle")
+            delay(40)
         }
-        error("Screen did not settle")
+    }
+    /**
+     * After a tap at [since]: a settled reading as soon as [ready] holds on it; otherwise, after [maxMs], a settled
+     * reading exactly as the old fixed pause + settle gave. Null when the screen does not settle.
+     */
+    private suspend fun awaitElement(since: Long, maxMs: Long, ready: (UiSnapshot) -> Boolean): UiSnapshot? {
+        while(android.os.SystemClock.uptimeMillis()-since<maxMs) {
+            val s=runCatching { stable(since=since) }.getOrNull() ?: break
+            if(ready(s)) return s
+            delay(100)
+        }
+        val left=maxMs-(android.os.SystemClock.uptimeMillis()-since)
+        if(left>0) delay(left)
+        return runCatching { stable() }.getOrNull()
     }
     private suspend fun ask(question: String, choices: List<String>, task: TaskContext, snapshot: UiSnapshot): String {
         status("Waiting for your answer"); note(question)
@@ -943,17 +992,20 @@ class AgentCoordinator(context: Context, private val settings: SettingsStore) {
                     ensureActive()
                     status("Working")
                     trace("act","${p.type} ${s.node(p.targetId)?.let { n -> (listOf(n.text,n.description)+s.under(n).drop(1).flatMap { listOf(it.text,it.description) }).firstOrNull { it.isNotBlank() } }.orEmpty().take(60)}${if(p.type=="launch") p.packageName else ""}")
+                    val actedAt=android.os.SystemClock.uptimeMillis()
                     val accepted=service().executor.execute(p)
                     if(!accepted) { note("The phone did not accept this step. The task stopped; nothing is retried blindly."); return }
-                    delay(350)
                     if(p.type=="launch") {
+                        delay(REACT_MS)
                         // Apps can take a few seconds to come to the foreground; wait for the exact package.
                         if(!awaitPackage(p.packageName)) { note("Could not check that the app opened."); return }
                         previous="Requested app opened."; continue
                     }
-                    val after=stable()
+                    // Was a fixed 350 ms pause + settle: now settles as soon as the app has redrawn (stable(since)).
+                    val after=stable(since=actedAt)
                     previous=when(p.type) {
-                        "set_text" -> if(after.nodes.any { it.resourceId==s.node(p.targetId)?.resourceId && stripInvisible(it.text).trim()==stripInvisible(p.text).trim() }) "Text entry verified in the selected field." else { note("Could not check that the text was typed. The task stopped."); return }
+                        "set_text" -> if(after.nodes.any { it.resourceId==s.node(p.targetId)?.resourceId && stripInvisible(it.text).trim()==stripInvisible(p.text).trim() })
+                            followUp(p,s,after,task) ?: "Text entry verified in the selected field." else { note("Could not check that the text was typed. The task stopped."); return }
                         "launch" -> if(after.packageName==p.packageName) "Requested app opened." else { note("Could not check that the app opened."); return }
                         else -> if(after.fingerprint!=fresh.fingerprint) "Screen changed after the action; inspect the new observation." else "Action accepted, but screen did not change. Do not repeat blindly."
                     }
@@ -962,8 +1014,30 @@ class AgentCoordinator(context: Context, private val settings: SettingsStore) {
         }
         note("I stopped at the 15-step safety limit. Start a new task if needed.")
     }
+    /**
+     * Type-then-tap (owner's decision, 2026-11-09): after verified typing, taps the follow-up element only if it is
+     * still the same element and the app's own policy allows it as a plain step. Send/pay/confirm/submit controls get
+     * Approval or Manual from the policy and are never tapped here; the next step proposes them on their own.
+     * Returns the result for the model, or null when the proposal had no follow-up tap.
+     */
+    private suspend fun followUp(p: Proposal, before: UiSnapshot, typed: UiSnapshot, task: TaskContext): String? {
+        if(p.thenClickId.isBlank()) return null
+        val typedOk="Text entry verified in the selected field."
+        val node=sameFollowUpTarget(before,typed,p.thenClickId) ?: return "$typedOk The follow-up tap was not done because that element changed; propose it as its own step if still needed."
+        val tap=p.followUp(typed)
+        if(policy.assess(typed,tap,task)!=Decision.Allow) return "$typedOk The follow-up tap needs its own step; propose it on its own if still needed."
+        ensureActive()
+        trace("act","click (follow-up) ${(listOf(node.text,node.description)+typed.under(node).drop(1).flatMap { listOf(it.text,it.description) }).firstOrNull { it.isNotBlank() }.orEmpty().take(60)}")
+        val at=android.os.SystemClock.uptimeMillis()
+        if(!service().executor.execute(tap)) return "$typedOk The phone did not accept the follow-up tap."
+        val after=runCatching { stable(since=at) }.getOrNull() ?: return "$typedOk The follow-up element was tapped; the screen is still changing."
+        return if(after.fingerprint!=typed.fingerprint) "$typedOk The follow-up element was tapped and the screen changed; inspect the new observation."
+            else "$typedOk The follow-up element was tapped, but the screen did not change. Do not repeat blindly."
+    }
     private suspend fun verifyCommit(before: UiSnapshot, d: Decision.Approval): String {
-        repeat(5) {
+        // Watch for ~5 s (time, not readings: readings got faster with event-aware settling).
+        val until=android.os.SystemClock.uptimeMillis()+5_000
+        while(android.os.SystemClock.uptimeMillis()<until) {
             delay(600)
             val after=stable()
             if(after.packageName!=before.packageName || after.sensitive) return "Unknown: the app changed after sending. Check it yourself; nothing is retried."
@@ -979,7 +1053,9 @@ class AgentCoordinator(context: Context, private val settings: SettingsStore) {
         return "Unknown: one send was attempted and the result was not checked. Check WhatsApp yourself. Nothing is retried automatically."
     }
     private suspend fun awaitPackage(pkg: String): Boolean {
-        repeat(20) {
+        // Up to 12 s, measured in time: readings got faster with event-aware settling, so a count of them is not.
+        val until=android.os.SystemClock.uptimeMillis()+12_000
+        while(android.os.SystemClock.uptimeMillis()<until) {
             ensureActive()
             // A lively screen (WhatsApp chat list) may never settle: the current reading's package is enough here.
             val now=runCatching { stable() }.getOrNull() ?: runCatching { service().collector.capture() }.getOrNull()
@@ -990,5 +1066,11 @@ class AgentCoordinator(context: Context, private val settings: SettingsStore) {
         return false
     }
     private suspend fun ensureActive() { currentCoroutineContext().ensureActive() }
-    companion object { const val VERIFIED = "Verified:" }
+    companion object {
+        const val VERIFIED = "Verified:"
+        /** A screen with no change event for this long is settled (events arrive at most every 150 ms per type). */
+        const val QUIET_MS = 250L
+        /** Time an app gets after an action to start redrawing (the old fixed pause after every action). */
+        const val REACT_MS = 350L
+    }
 }

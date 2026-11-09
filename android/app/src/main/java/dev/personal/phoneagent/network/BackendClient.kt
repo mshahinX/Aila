@@ -66,14 +66,16 @@ class BackendClient(private val settings: SettingsStore) {
     }
     // ---------- v2 chatbot-first ----------
     /** [intent] = model's myGov classification (info/read/action/unclear); the phone re-checks it. */
-    data class ChannelStep(val id: String, val app: String, val channel: String, val goal: String, val usesResultOf: String, val intent: String = "unclear")
+    /** [firstMessage] = bot steps: the plan's first message to the app's chatbot ("" = ask /v1/bot-turn as before). */
+    data class ChannelStep(val id: String, val app: String, val channel: String, val goal: String, val usesResultOf: String, val intent: String = "unclear", val firstMessage: String = "")
     data class BotTurn(val type: String, val text: String, val summary: String)
     suspend fun plan(command: String, mode: String): List<ChannelStep> {
         val steps = request("/v1/plan","POST",JSONObject().put("command",command).put("mode",mode)).getJSONArray("steps")
         require(steps.length() in 1..8) { "Invalid plan" }
         return (0 until steps.length()).map { i ->
             val j = steps.getJSONObject(i)
-            ChannelStep(j.getString("id"),j.getString("app"),j.getString("channel"),j.getString("goal").take(600),j.getString("usesResultOf"),j.optString("intent","unclear")).also {
+            ChannelStep(j.getString("id"),j.getString("app"),j.getString("channel"),j.getString("goal").take(600),j.getString("usesResultOf"),j.optString("intent","unclear"),
+                j.optString("firstMessage","").take(1000).takeIf { j.getString("channel")=="bot" }.orEmpty()).also {
                 require(it.app in setOf("abb","mygov","whatsapp","azercell") && it.channel in setOf("bot","ui")) { "Invalid plan step" }
             }
         }

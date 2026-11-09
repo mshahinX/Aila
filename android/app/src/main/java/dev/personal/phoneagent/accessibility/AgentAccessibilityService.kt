@@ -70,8 +70,40 @@ class AgentAccessibilityService : AccessibilityService() {
         if (android.os.Build.VERSION.SDK_INT >= 33) registerReceiver(q, qf, android.Manifest.permission.DUMP, null, android.content.Context.RECEIVER_EXPORTED)
         else @Suppress("UnspecifiedRegisterReceiverFlag") registerReceiver(q, qf, android.Manifest.permission.DUMP, null)
         request = q
+        // `adb shell am broadcast -a dev.personal.phoneagent.CAPTURE -p dev.personal.phoneagent`: saves the current screen
+        // exactly as the screen loop would upload it (same limits and masking) to app-private files/eval-captures/,
+        // for the replay eval. Unchanged screens are skipped. Senders must hold DUMP (adb shell does; apps cannot).
+        // Pull with `run-as`, then delete; the files never leave app-private storage on their own.
+        var lastCaptured = ""
+        val cr = object : android.content.BroadcastReceiver() {
+            override fun onReceive(c: android.content.Context?, i: android.content.Intent?) {
+                val s = collector.capture()
+                val f = s.fingerprint
+                if (f == lastCaptured) return
+                lastCaptured = f
+                val dir = java.io.File(filesDir, "eval-captures").apply { mkdirs() }
+                java.io.File(dir, "${s.capturedAt}.json").writeText(s.json().toString())
+                android.util.Log.d("KemekciProbe", "captured pkg=${s.packageName} screen=${s.screen} nodes=${s.nodes.size} sensitive=${s.sensitive} truncated=${s.truncated}")
+            }
+        }
+        val cf = android.content.IntentFilter("dev.personal.phoneagent.CAPTURE")
+        if (android.os.Build.VERSION.SDK_INT >= 33) registerReceiver(cr, cf, android.Manifest.permission.DUMP, null, android.content.Context.RECEIVER_EXPORTED)
+        else @Suppress("UnspecifiedRegisterReceiverFlag") registerReceiver(cr, cf, android.Manifest.permission.DUMP, null)
+        capture = cr
     }
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) { /* No passive capture or event logging. */ }
+    private var capture: android.content.BroadcastReceiver? = null
+    /**
+     * When each app last changed its screen (uptime ms), from the window/content/text-change events this service is
+     * subscribed to. Timestamps only: no event content is read, kept or logged. Lets the agent see that a screen has
+     * gone quiet without polling it; per app, so Aila's own overlay updates do not count as the other app changing.
+     */
+    private val lastChange = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        val pkg = event?.packageName?.toString() ?: return
+        lastChange[pkg] = android.os.SystemClock.uptimeMillis()
+    }
+    /** Uptime of [pkg]'s last screen change, or 0 if none was seen since phone control connected. */
+    fun lastChangeAt(pkg: String): Long = lastChange[pkg] ?: 0L
     override fun onInterrupt() { (application as AgentApplication).agent.stop("Android stopped phone control.") }
     override fun onUnbind(intent: android.content.Intent?): Boolean {
         if (instance === this) instance = null
@@ -80,6 +112,7 @@ class AgentAccessibilityService : AccessibilityService() {
     override fun onDestroy() {
         probe?.let { runCatching { unregisterReceiver(it) } }; probe = null
         request?.let { runCatching { unregisterReceiver(it) } }; request = null
+        capture?.let { runCatching { unregisterReceiver(it) } }; capture = null
         (application as AgentApplication).agent.stop("Phone control disconnected.")
         if (::overlay.isInitialized) overlay.dismiss()
         if (instance === this) instance = null

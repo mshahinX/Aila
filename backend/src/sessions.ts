@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { action, validateTarget, type Create, type Next, type NextResponse, type Usage, type Action } from './protocol.js';
-import { GatewayFailure, type Gateway } from './gateway.js';
+import { action, nodeLabel, validateTarget, type Create, type Next, type NextResponse, type Usage, type Action } from './protocol.js';
+import { GatewayFailure, type Gateway, type HistoryEntry } from './gateway.js';
 import { containsSensitiveData, manualBoundary, mockPlan } from './planner.js';
 
 export class HttpError extends Error {
@@ -13,7 +13,24 @@ type Session = {
   sequence: number; steps: number; records: Map<string, Entry>; snapshots: Set<string>;
   pending: boolean; stopped: boolean; controller?: AbortController; timer: NodeJS.Timeout;
   clarifications: string[]; usage: Usage; fixtureSendProposed: boolean;
+  /** Last few proposals with the phone's reported result: labels only, transient, cleared with the session. */
+  history: HistoryEntry[];
 };
+/** How many earlier actions the model sees. */
+const historySize = 6;
+/** One inference may be asked again once; both attempts together stay inside Fastify's 50 s request timeout. */
+const inferenceTimeoutMs = 45_000;
+function historyEntry(a: Action, request: Next): HistoryEntry {
+  const nodes = request.observation.nodes;
+  const label = (id: string) => { const n = nodes.find(n => n.id === id); return n ? nodeLabel(nodes, n) : ''; };
+  return {
+    action: a.type === 'scroll' ? `scroll ${a.direction}` : a.type,
+    target: a.type === 'launch' ? a.packageName : a.targetId ? label(a.targetId) : '',
+    typed: a.type === 'set_text' ? a.text.slice(0, 80) : a.type === 'ask_user' ? a.question.slice(0, 120) : '',
+    then: a.thenClickId ? label(a.thenClickId) : '',
+    result: '',
+  };
+}
 export class Sessions {
   private sessions = new Map<string, Session>();
   private deviceId?: string;
@@ -36,7 +53,7 @@ export class Sessions {
     const timer = setTimeout(() => this.remove(id), ttl); timer.unref();
     this.sessions.set(id, { id, deviceId: input.deviceId, command: input.command, mode: input.mode, expires: this.now() + ttl,
       sequence: 0, steps: 0, records: new Map(), snapshots: new Set(), pending: false, stopped: false, timer,
-      clarifications: [], usage: { inputTokens: 0, outputTokens: 0 }, fixtureSendProposed: false });
+      clarifications: [], usage: { inputTokens: 0, outputTokens: 0 }, fixtureSendProposed: false, history: [] });
     return { sessionId: id, maxSteps: 15, mode: input.mode };
   }
   private get(id: string): Session {
@@ -52,7 +69,7 @@ export class Sessions {
     const s = this.sessions.get(id);
     if (!s) return;
     s.stopped = true; s.controller?.abort(); clearTimeout(s.timer);
-    s.command = ''; s.clarifications = []; s.records.clear(); s.snapshots.clear();
+    s.command = ''; s.clarifications = []; s.history = []; s.records.clear(); s.snapshots.clear();
     this.sessions.delete(id);
   }
   private sweep() { for (const s of this.sessions.values()) if (s.expires <= this.now()) this.remove(s.id); }
@@ -75,6 +92,9 @@ export class Sessions {
     s.pending = true; this.activeRequests++; s.steps++; s.sequence++; s.snapshots.add(input.observation.snapshotId);
     for (const answer of input.clarifications) if (!s.clarifications.includes(answer)) s.clarifications.push(answer);
     while (s.clarifications.length > 16 || s.clarifications.join('').length > 12000) s.clarifications.shift();
+    // The phone's previousResult reports what happened after the last proposal: attach it to that entry.
+    const last = s.history.at(-1);
+    if (last && !last.result) last.result = (input.previousResult ?? 'no result reported').slice(0, 300);
     if (willInfer) { this.liveRequests++; this.liveDeadline ??= this.now() + this.liveWindow; }
     const controller = new AbortController(); s.controller = controller;
     // Install the replay record before execution begins, including synchronous/mock results.
@@ -95,6 +115,8 @@ export class Sessions {
         this.get(id);
         const checked = validateTarget(proposed, input);
         if (checked.type === 'click' && input.observation.nodes.some(n => n.id === checked.targetId && n.resourceId === 'dev.personal.phoneagent:id/fixture_send')) s.fixtureSendProposed = true;
+        s.history.push(historyEntry(checked, input));
+        while (s.history.length > historySize) s.history.shift();
         const value: NextResponse = { requestId: input.requestId, sequence: input.sequence, proposal: { ...checked, actionId: randomUUID(), snapshotId: input.observation.snapshotId }, usage };
         return { value };
       } catch (err) {
@@ -113,9 +135,13 @@ export class Sessions {
         onAbort = () => reject(s.stopped ? new HttpError(404, 'session_not_found') : (this.now() >= this.liveDeadline! ? new HttpError(429, 'live_budget_exhausted') : new HttpError(502, 'gateway_failure')));
         controller.signal.addEventListener('abort', onAbort, { once: true });
         if (controller.signal.aborted) onAbort();
-        timeout = setTimeout(() => controller.abort(), Math.max(1, Math.min(30_000, this.liveDeadline! - this.now()))); timeout.unref();
+        timeout = setTimeout(() => controller.abort(), Math.max(1, Math.min(inferenceTimeoutMs, this.liveDeadline! - this.now()))); timeout.unref();
       });
-      return await Promise.race([this.options.gateway!.propose({ command: s.command, clarifications: [...s.clarifications], request }, controller.signal), cancelled]);
+      // A second attempt (unusable first reply) only if the live allowance still has room; it counts like any other.
+      const maxAttempts = this.liveMax - this.liveRequests >= 1 ? 2 : 1;
+      const input = { command: s.command, clarifications: [...s.clarifications], request, history: s.history.map(h => ({ ...h })), maxAttempts,
+        onAttempt: (attempt: number) => { if (attempt > 1) this.liveRequests++; } };
+      return await Promise.race([this.options.gateway!.propose(input, controller.signal), cancelled]);
     } finally {
       if (timeout) clearTimeout(timeout);
       if (onAbort) controller.signal.removeEventListener('abort', onAbort);

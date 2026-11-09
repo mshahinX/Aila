@@ -75,24 +75,45 @@ data class UiSnapshot(
 data class Proposal(
     val actionId: String, val snapshotId: String, val type: String,
     val targetId: String = "", val text: String = "", val packageName: String = "",
-    val question: String = "", val message: String = "", val direction: String = "forward", val durationMs: Int = 0
+    val question: String = "", val message: String = "", val direction: String = "forward", val durationMs: Int = 0,
+    /**
+     * set_text only: a node of the same snapshot to tap right after typing (a search or Next button). The phone taps it
+     * only if it is still the same element after typing and the app's policy allows it as a plain step (never a send,
+     * pay, confirm or submit control: those return Approval/Manual and are left for their own step).
+     */
+    val thenClickId: String = ""
 ) {
     companion object {
+        private val required = setOf("actionId","snapshotId","type","targetId","text","packageName","question","message","direction","durationMs")
         fun parse(j: JSONObject): Proposal {
-            val expected = setOf("actionId","snapshotId","type","targetId","text","packageName","question","message","direction","durationMs")
-            require(j.keys().asSequence().toSet() == expected) { "Unexpected proposal fields" }
+            // thenClickId is optional so an older backend keeps working with this app.
+            val keys = j.keys().asSequence().toSet()
+            require(keys == required || keys == required + "thenClickId") { "Unexpected proposal fields" }
             require(listOf("actionId","snapshotId","type","targetId","text","packageName","question","message","direction").all { j.get(it) is String })
+            require(!j.has("thenClickId") || j.get("thenClickId") is String) { "Follow-up target must be a string" }
             require(j.get("durationMs") is Int || j.get("durationMs") is Long) { "Duration must be an integer" }
             require(j.getLong("durationMs") in 0L..2000L) { "Duration out of range" }
             val p = Proposal(j.getString("actionId"),j.getString("snapshotId"),j.getString("type"),
                 j.getString("targetId"),j.getString("text"),j.getString("packageName"),j.getString("question"),
-                j.getString("message"),j.getString("direction"),j.getInt("durationMs"))
+                j.getString("message"),j.getString("direction"),j.getInt("durationMs"),j.optString("thenClickId",""))
             require(p.type in setOf("launch","click","set_text","scroll","back","wait","ask_user","finish","manual"))
             require(p.actionId.isNotBlank() && p.snapshotId.isNotBlank() && p.durationMs in 0..2000)
             require(p.direction in setOf("forward","backward") && p.text.length <= 4000 && p.question.length <= 4000 && p.message.length <= 4000)
+            require(p.thenClickId.isEmpty() || (p.type == "set_text" && p.thenClickId != p.targetId && p.thenClickId.length <= 128)) { "Invalid follow-up target" }
             return p
         }
     }
+    /** The follow-up tap as its own click proposal, bound to the snapshot read after typing. */
+    fun followUp(after: UiSnapshot) = Proposal(UUID.randomUUID().toString(), after.snapshotId, "click", targetId = thenClickId)
+}
+/**
+ * The follow-up node in the snapshot read after typing, only if it is recognisably the same element: same path id,
+ * resource id and label, still enabled and clickable. Otherwise null, and the tap is left to the next step.
+ */
+fun sameFollowUpTarget(before: UiSnapshot, after: UiSnapshot, id: String): UiNode? {
+    val was = before.node(id) ?: return null
+    val now = after.node(id) ?: return null
+    return now.takeIf { it.enabled && it.clickable && it.resourceId == was.resourceId && it.text == was.text && it.description == was.description }
 }
 
 data class TaskContext(
