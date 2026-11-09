@@ -1,0 +1,24 @@
+# Credentials and local state
+.env
+.env.*
+!.env.example
+.local/
+.toolchain/
+*.jks
+*.keystore
+# Dependencies/build output
+node_modules/
+dist/
+.gradle/
+build/
+local.properties
+*.apk
+*.aab
+.idea/
+*.iml
+.kotlin/
+# Captures are private and must not become fixtures
+*.png
+*.xml.capture
+# App icon/splash resources are not captures
+!android/app/src/main/res/**/*.png

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug builds only: design preview for screenshots. Seeds UI state; never starts tasks or touches other apps. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
+    <!-- Lets phone control switch itself back on (accessibility/PhoneControlKeeper.kt). Has no effect until the owner grants it once over USB. -->
+    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS" tools:ignore="ProtectedPermissions" />
+    <application>
+        <activity android:name=".ui.PreviewActivity" android:exported="true" android:theme="@style/Theme.Komekci" />
+    </application>
+</manifest>

@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Köməkçi v9 tokens (light): one chat screen, simple and enterprise. Dark values in values-night/colors.xml. Read through Ui.init(). -->
+<resources>
+    <!-- page / cards & bars / quiet fills -->
+    <color name="k_ground">#F5F7FA</color>
+    <color name="k_surface">#FFFFFF</color>
+    <color name="k_surface_alt">#F2F4F7</color>
+    <!-- text, secondary text, borders -->
+    <color name="k_ink">#101828</color>
+    <color name="k_muted">#475467</color>
+    <color name="k_line">#E4E7EC</color>
+    <color name="k_outline">#D0D5DD</color>
+    <!-- brand navy: primary buttons, the user's bubbles, links -->
+    <color name="k_accent">#1849A9</color>
+    <color name="k_on_accent">#FFFFFF</color>
+    <color name="k_accent_text">#1849A9</color>
+    <color name="k_accent_soft">#EEF4FF</color>
+    <color name="k_primary_container">#1849A9</color>
+    <color name="k_on_primary_container">#FFFFFF</color>
+    <!-- inverse surface: panel over other apps -->
+    <color name="k_strong">#101828</color>
+    <color name="k_on_strong">#FFFFFF</color>
+    <color name="k_inverse_primary">#B2CCFF</color>
+    <!-- "you do this" / permission -->
+    <color name="k_you">#B54708</color>
+    <color name="k_you_soft">#FFFAEB</color>
+    <color name="k_you_line">#FEC84B</color>
+    <color name="k_saffron">#1849A9</color>
+    <color name="k_on_saffron">#FFFFFF</color>
+    <!-- verified / stop -->
+    <color name="k_ok">#079455</color>
+    <color name="k_ok_soft">#DCFAE6</color>
+    <color name="k_stop">#B42318</color>
+    <color name="k_on_stop">#FFFFFF</color>
+    <color name="k_stop_soft">#FEF3F2</color>
+    <color name="k_scrim">#99101828</color>
+    <color name="k_brand">#1849A9</color>
+    <color name="k_icon_bg">#1849A9</color>
+</resources>

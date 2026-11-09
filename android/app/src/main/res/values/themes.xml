@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Komekci" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/k_ground</item>
+        <item name="android:colorBackground">@color/k_ground</item>
+        <item name="android:colorPrimary">@color/k_accent</item>
+        <item name="android:colorAccent">@color/k_accent</item>
+        <item name="android:colorControlActivated">@color/k_accent</item>
+        <item name="android:textColorPrimary">@color/k_ink</item>
+        <item name="android:textColorSecondary">@color/k_muted</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:enforceNavigationBarContrast">false</item>
+        <item name="android:windowSplashScreenBackground">@color/k_icon_bg</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/splash_icon</item>
+    </style>
+</resources>

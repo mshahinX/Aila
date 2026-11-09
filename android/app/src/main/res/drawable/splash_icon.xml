@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Splash: the A with "Aila" under it, as an adaptive icon (same kind as the launcher icon), so every launcher, MIUI included, sizes and masks
+     it correctly. The background matches the splash colour, so only the A and its soft glow are visible: no plate. -->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/k_icon_bg" />
+    <foreground android:drawable="@drawable/splash_fg" />
+</adaptive-icon>

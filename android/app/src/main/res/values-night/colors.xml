@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Köməkçi v9 tokens (dark). Surfaces are never pure black. -->
+<resources>
+    <color name="k_ground">#0C111D</color>
+    <color name="k_surface">#161B26</color>
+    <color name="k_surface_alt">#1F242F</color>
+    <color name="k_ink">#F5F5F6</color>
+    <color name="k_muted">#CECFD2</color>
+    <color name="k_line">#333741</color>
+    <color name="k_outline">#61646C</color>
+    <color name="k_accent">#528BFF</color>
+    <color name="k_on_accent">#0C111D</color>
+    <color name="k_accent_text">#84ADFF</color>
+    <color name="k_accent_soft">#102A56</color>
+    <color name="k_primary_container">#1849A9</color>
+    <color name="k_on_primary_container">#FFFFFF</color>
+    <color name="k_strong">#F5F5F6</color>
+    <color name="k_on_strong">#0C111D</color>
+    <color name="k_inverse_primary">#1849A9</color>
+    <color name="k_you">#FDB022</color>
+    <color name="k_you_soft">#2B1D07</color>
+    <color name="k_you_line">#93370D</color>
+    <color name="k_saffron">#528BFF</color>
+    <color name="k_on_saffron">#0C111D</color>
+    <color name="k_ok">#47CD89</color>
+    <color name="k_ok_soft">#053321</color>
+    <color name="k_stop">#F97066</color>
+    <color name="k_on_stop">#0C111D</color>
+    <color name="k_stop_soft">#55160C</color>
+    <color name="k_scrim">#CC000000</color>
+</resources>
